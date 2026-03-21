@@ -1,6 +1,6 @@
 const express = require("express");
 const { v4: uuid } = require("uuid");
-const { query, getPool } = require("../database/db");
+const { query } = require("../database/db");
 
 function requireAdmin(req, res, next) {
   if (!req.user || req.user.role !== "admin") {
@@ -252,16 +252,129 @@ feedback.delete("/:id", async (req, res) => {
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 const reports = express.Router();
+
+// Helper: auto-generate summary from real DB data based on date range
+async function generateSummary(type, date) {
+  try {
+    const d = new Date(date);
+    let startDate, endDate;
+
+    if (type === "weekly") {
+      // Start of the week (Monday)
+      const day = d.getDay();
+      const diff = (day === 0 ? -6 : 1 - day);
+      startDate = new Date(d);
+      startDate.setDate(d.getDate() + diff);
+      endDate = new Date(startDate);
+      endDate.setDate(startDate.getDate() + 6);
+    } else if (type === "monthly") {
+      startDate = new Date(d.getFullYear(), d.getMonth(), 1);
+      endDate   = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    } else {
+      // custom — use full day of the date
+      startDate = new Date(d);
+      endDate   = new Date(d);
+    }
+
+    const start = startDate.toISOString().split("T")[0];
+    const end   = endDate.toISOString().split("T")[0];
+
+    // Orders in period
+    const [orderStats] = await query(`
+      SELECT
+        COUNT(*) AS total_orders,
+        COALESCE(SUM(total_amount), 0) AS total_revenue,
+        SUM(CASE WHEN status = 'delivered'  THEN 1 ELSE 0 END) AS delivered,
+        SUM(CASE WHEN status = 'pending'    THEN 1 ELSE 0 END) AS pending,
+        SUM(CASE WHEN status = 'cancelled'  THEN 1 ELSE 0 END) AS cancelled
+      FROM \`order\`
+      WHERE DATE(order_date) BETWEEN ? AND ?
+    `, [start, end]);
+
+    // Top product in period
+    const [topProduct] = await query(`
+      SELECT p.name, SUM(oi.quantity) AS total_qty
+      FROM order_item oi
+      JOIN \`order\` o ON oi.order_id = o.order_id
+      JOIN product p ON oi.sku_id = p.sku_id
+      WHERE DATE(o.order_date) BETWEEN ? AND ?
+      GROUP BY p.sku_id, p.name
+      ORDER BY total_qty DESC
+      LIMIT 1
+    `, [start, end]);
+
+    // Low stock products
+    const lowStock = await query(`
+      SELECT COUNT(*) AS cnt FROM product WHERE stock_quantity <= reorder_point
+    `);
+    const lowStockCount = lowStock[0]?.cnt ?? 0;
+
+    // Expiring soon
+    const expiring = await query(`
+      SELECT COUNT(*) AS cnt FROM product
+      WHERE expiry_date IS NOT NULL
+        AND expiry_date >= CURDATE()
+        AND expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+    `);
+    const expiringCount = expiring[0]?.cnt ?? 0;
+
+    // New products added in period
+    const [newProducts] = await query(`
+      SELECT COUNT(*) AS cnt FROM product WHERE DATE(created_at) BETWEEN ? AND ?
+    `, [start, end]);
+
+    const revenue   = Number(orderStats.total_revenue).toFixed(2);
+    const periodStr = type === "weekly"
+      ? `${start} to ${end}`
+      : type === "monthly"
+      ? startDate.toLocaleString("default", { month: "long", year: "numeric" })
+      : start;
+
+    let summary = `📅 Period: ${periodStr}. `;
+    summary += `📦 Orders: ${orderStats.total_orders} total`;
+    if (orderStats.total_orders > 0) {
+      summary += ` (${orderStats.delivered} delivered, ${orderStats.pending} pending, ${orderStats.cancelled} cancelled)`;
+    }
+    summary += `. 💰 Revenue: $${revenue}. `;
+
+    if (topProduct) {
+      summary += `🏆 Top product: ${topProduct.name} (${topProduct.total_qty} units sold). `;
+    } else {
+      summary += `🏆 No sales recorded in this period. `;
+    }
+
+    if (newProducts.cnt > 0) {
+      summary += `🆕 ${newProducts.cnt} new product(s) added. `;
+    }
+
+    if (lowStockCount > 0) {
+      summary += `⚠️ ${lowStockCount} product(s) at or below reorder point. `;
+    }
+
+    if (expiringCount > 0) {
+      summary += `🔔 ${expiringCount} product(s) expiring within 30 days.`;
+    }
+
+    return summary.trim();
+  } catch (e) {
+    return "Summary could not be generated.";
+  }
+}
+
 reports.get("/", async (req, res) => {
   try {
-    const where = req.query.type ? "WHERE r.type=?" : "";
+    const where  = req.query.type ? "WHERE r.type=?" : "";
     const params = req.query.type ? [req.query.type] : [];
-    res.json(await query(
-      `SELECT r.*, a.username AS admin_username FROM report r LEFT JOIN admin a ON r.admin_id=a.admin_id ${where} ORDER BY r.date DESC`,
+    const rows = await query(
+      `SELECT r.*, a.username AS admin_username FROM report r
+       LEFT JOIN admin a ON r.admin_id=a.admin_id
+       ${where} ORDER BY r.date DESC`,
       params
-    ));
+    );
+    res.json(rows);
   } catch (e) { res.status(500).json({ message: e.message }); }
 });
+
 reports.get("/:id", async (req, res) => {
   try {
     const [row] = await query(
@@ -272,18 +385,60 @@ reports.get("/:id", async (req, res) => {
     res.json(row);
   } catch (e) { res.status(500).json({ message: e.message }); }
 });
+
 reports.post("/", requireAdmin, async (req, res) => {
   try {
-    const { date, summary, type } = req.body;
-    if (!type||!["weekly","monthly","custom"].includes(type))
+    const { date, type } = req.body;
+    if (!type || !["weekly","monthly","custom"].includes(type))
       return res.status(400).json({ message: "type must be weekly, monthly, or custom." });
+
+    const reportDate = date || new Date().toISOString().split("T")[0];
+
+    // Auto-generate summary from real data
+    const autoSummary = await generateSummary(type, reportDate);
+
     const id = uuid();
     await query("INSERT INTO report (report_id, admin_id, date, summary, type) VALUES (?, ?, ?, ?, ?)",
-      [id, req.user.id, date||new Date().toISOString().split("T")[0], summary||null, type]);
+      [id, req.user.id, reportDate, autoSummary, type]);
     const [row] = await query("SELECT * FROM report WHERE report_id = ?", [id]);
     res.status(201).json(row);
   } catch (e) { res.status(500).json({ message: e.message }); }
 });
+
+reports.patch("/:id", requireAdmin, async (req, res) => {
+  try {
+    const { date, type } = req.body;
+
+    // If type or date changed, regenerate summary
+    let { summary } = req.body;
+    if ((type || date) && summary === undefined) {
+      const [existing] = await query("SELECT * FROM report WHERE report_id=?", [req.params.id]);
+      if (existing) {
+        const newType = type || existing.type;
+        const newDate = date || String(existing.date).split("T")[0];
+        summary = await generateSummary(newType, newDate);
+      }
+    }
+
+    const allowed = ["date","summary","type"];
+    const fields  = allowed.filter(k => k in req.body || (k === "summary" && summary !== undefined));
+    const values  = fields.map(f => f === "summary" ? summary : req.body[f]);
+
+    if (fields.length) {
+      await query(
+        `UPDATE report SET ${fields.map(f=>`${f}=?`).join(",")} WHERE report_id=?`,
+        [...values, req.params.id]
+      );
+    }
+
+    const [row] = await query(
+      "SELECT r.*, a.username AS admin_username FROM report r LEFT JOIN admin a ON r.admin_id=a.admin_id WHERE r.report_id=?",
+      [req.params.id]
+    );
+    res.json(row);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+});
+
 reports.delete("/:id", requireAdmin, async (req, res) => {
   await query("DELETE FROM report WHERE report_id = ?", [req.params.id]);
   res.status(204).end();

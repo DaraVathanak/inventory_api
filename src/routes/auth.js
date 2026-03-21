@@ -9,31 +9,45 @@ router.post("/login", async (req, res) => {
     if (!username || !password)
       return res.status(400).json({ message: "username and password are required." });
 
-    // Try admin → manager → employee
     let user = null;
     let role = null;
+    let idCol = null;
+    let table = null;
 
-    const [admin] = await query("SELECT *, 'admin' AS role FROM admin WHERE username = ?", [username]);
-    if (admin) { user = admin; role = "admin"; }
+    // Try admin
+    const [admin] = await query(
+      "SELECT *, DATE_FORMAT(CONVERT_TZ(last_login, '+00:00', @@session.time_zone), '%Y-%m-%dT%H:%i:%s') AS last_login FROM admin WHERE username = ?",
+      [username]
+    );
+    if (admin) { user = admin; role = "admin"; idCol = "admin_id"; table = "admin"; }
 
+    // Try manager
     if (!user) {
-      const [manager] = await query("SELECT *, 'manager' AS role FROM manager WHERE username = ?", [username]);
-      if (manager) { user = manager; role = "manager"; }
+      const [manager] = await query(
+        "SELECT *, DATE_FORMAT(CONVERT_TZ(last_login, '+00:00', @@session.time_zone), '%Y-%m-%dT%H:%i:%s') AS last_login FROM manager WHERE username = ?",
+        [username]
+      );
+      if (manager) { user = manager; role = "manager"; idCol = "manager_id"; table = "manager"; }
     }
 
+    // Try employee
     if (!user) {
-      const [employee] = await query("SELECT *, 'employee' AS role FROM employee WHERE username = ?", [username]).catch(() => [[]]);
-      if (employee) { user = employee; role = "employee"; }
+      const rows = await query(
+        "SELECT *, DATE_FORMAT(CONVERT_TZ(last_login, '+00:00', @@session.time_zone), '%Y-%m-%dT%H:%i:%s') AS last_login FROM employee WHERE username = ?",
+        [username]
+      ).catch(() => []);
+      if (rows[0]) { user = rows[0]; role = "employee"; idCol = "employee_id"; table = "employee"; }
     }
 
     if (!user || !bcrypt.compareSync(password, user.password_hash))
       return res.status(401).json({ message: "Invalid username or password." });
 
-    const id = user.admin_id || user.manager_id || user.employee_id;
+    const id = user[idCol];
+    const now = new Date().toISOString();
 
-    if (role === "admin") {
-      await query("UPDATE admin SET last_login = NOW() WHERE admin_id = ?", [id]);
-    }
+    // Update last_login for all roles
+    await query(`UPDATE ${table} SET last_login = NOW() WHERE ${idCol} = ?`, [id]);
+    user.last_login = now;
 
     const token = jwt.sign({ id, username: user.username, role }, process.env.JWT_SECRET, {
       expiresIn: process.env.JWT_EXPIRES_IN || "7d",

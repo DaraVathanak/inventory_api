@@ -25,6 +25,7 @@ const ordersRoutes   = require("./routes/orders");
 const { suppliers, warehouses, categories, customers,
         payments, shipments, feedback, reports } = require("./routes/resources");
 const { router: expiryRouter, startExpiryJob } = require("./jobs/expiryAlert");
+const restockLogRoutes = require("./routes/restock");
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +52,7 @@ app.use("/api/v1/shipments",     authenticate, shipments);
 app.use("/api/v1/feedback",      authenticate, feedback);
 app.use("/api/v1/reports",       authenticate, reports);
 app.use("/api/v1/expiry-alerts", authenticate, expiryRouter);
+app.use("/api/v1/restock-log",   authenticate, restockLogRoutes);
 
 app.get("/health", (req, res) =>
   res.json({ status: "ok", db: "mysql", timestamp: new Date().toISOString() })

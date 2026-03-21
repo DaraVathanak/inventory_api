@@ -17,18 +17,32 @@ async function connectDB() {
   await tempConn.end();
   console.log(`🗄️   Database '${database}' ready.`);
 
-  // Step 2 — create the real pool pointing at the database
+  // Step 2 — create the real pool with timezone set to local system time
   pool = mysql.createPool({
     host, port, database, user, password,
     waitForConnections: true,
     connectionLimit:    10,
     queueLimit:         0,
+    timezone:           "local", // use server's local timezone
   });
 
+  // Step 3 — set MySQL session timezone to match Node.js process timezone
   const conn = await pool.getConnection();
-  console.log(`✅  MySQL connected → ${host}:${port}/${database}`);
+  const offset = getTimezoneOffset();
+  await conn.execute(`SET time_zone = '${offset}'`);
   conn.release();
+  console.log(`✅  MySQL connected → ${host}:${port}/${database} (timezone: ${offset})`);
   return pool;
+}
+
+// Get current timezone offset as MySQL-compatible string e.g. "+07:00"
+function getTimezoneOffset() {
+  const offset = -new Date().getTimezoneOffset();
+  const sign   = offset >= 0 ? "+" : "-";
+  const abs    = Math.abs(offset);
+  const h      = String(Math.floor(abs / 60)).padStart(2, "0");
+  const m      = String(abs % 60).padStart(2, "0");
+  return `${sign}${h}:${m}`;
 }
 
 async function getPool() {

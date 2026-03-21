@@ -14,14 +14,14 @@ function requireAdmin(req, res, next) {
 router.get("/", async (req, res) => {
   try {
     const admins = await query(
-      "SELECT admin_id AS id, username, security_level AS level, last_login, 'admin' AS role FROM admin"
+      "SELECT admin_id AS id, username, security_level, NULL AS department, NULL AS access_level, NULL AS position, NULL AS full_name, DATE_FORMAT(CONVERT_TZ(last_login, '+00:00', @@session.time_zone), '%Y-%m-%dT%H:%i:%s') AS last_login, 'admin' AS role FROM admin"
     );
     const managers = await query(
-      "SELECT manager_id AS id, username, department AS level, NULL AS last_login, 'manager' AS role FROM manager"
+      "SELECT manager_id AS id, username, NULL AS security_level, department, access_level, NULL AS position, NULL AS full_name, DATE_FORMAT(CONVERT_TZ(last_login, '+00:00', @@session.time_zone), '%Y-%m-%dT%H:%i:%s') AS last_login, 'manager' AS role FROM manager"
     );
     const employees = await query(
-      "SELECT employee_id AS id, username, position AS level, NULL AS last_login, 'employee' AS role FROM employee"
-    ).catch(() => []); // graceful if table doesn't exist yet
+      "SELECT employee_id AS id, username, NULL AS security_level, NULL AS department, NULL AS access_level, position, full_name, DATE_FORMAT(CONVERT_TZ(last_login, '+00:00', @@session.time_zone), '%Y-%m-%dT%H:%i:%s') AS last_login, 'employee' AS role FROM employee"
+    ).catch(() => []);
     res.json([...admins, ...managers, ...employees]);
   } catch (e) { res.status(500).json({ message: e.message }); }
 });

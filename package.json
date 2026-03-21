@@ -9,7 +9,8 @@
     "start": "node src/index.js",
     "seed": "node src/database/seed.js",
     "migrate": "node src/database/migrate.js",
-    "migrate:employee": "node src/database/migrate_employee.js"
+    "migrate:employee": "node src/database/migrate_employee.js",
+    "migrate:lastlogin": "node src/database/lastlogin.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

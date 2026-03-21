@@ -79,8 +79,10 @@ router.get("/:id", async (req, res) => {
 // POST with optional image upload
 router.post("/", upload.single("image"), async (req, res) => {
   try {
-    const { name, unit_price=0, stock_quantity=0, reorder_point=0,
-            supplier_id, warehouse_id, category_id, expiry_date, description } = req.body;
+    const { name, supplier_id, warehouse_id, category_id, expiry_date, description } = req.body;
+    const unit_price     = Math.max(0, Number(req.body.unit_price     ?? 0));
+    const stock_quantity = Math.max(0, Math.floor(Number(req.body.stock_quantity ?? 0)));
+    const reorder_point  = Math.max(0, Math.floor(Number(req.body.reorder_point  ?? 0)));
     if (!name) return res.status(400).json({ message: "name is required." });
 
     const sku_id    = `SKU-${uuid().slice(0,8).toUpperCase()}`;
@@ -101,25 +103,55 @@ router.post("/", upload.single("image"), async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 });
 
-// PATCH with optional image upload
-router.patch("/:id", upload.single("image"), async (req, res) => {
+// PATCH — supports both JSON (no image) and multipart (with image)
+router.patch("/:id", (req, res, next) => {
+  const ct = req.headers["content-type"] || "";
+  if (ct.includes("multipart/form-data")) {
+    upload.single("image")(req, res, next);
+  } else {
+    next(); // JSON body already parsed by express.json()
+  }
+}, async (req, res) => {
   try {
     const allowed = ["name","unit_price","stock_quantity","reorder_point",
                      "supplier_id","warehouse_id","category_id","expiry_date","description"];
+
+    // req.body works for both JSON and multipart
     const fields = allowed.filter(k => k in req.body);
-    const values = fields.map(f => req.body[f]);
+    const values = fields.map(f => {
+      const v = req.body[f];
+      // Clamp numeric fields to >= 0
+      if (["unit_price","stock_quantity","reorder_point"].includes(f)) {
+        return Math.max(0, Number(v));
+      }
+      return v;
+    });
 
     if (req.file) {
       fields.push("image_url");
       values.push(`/uploads/${req.file.filename}`);
     }
 
-    if (fields.length) {
-      values.push(req.params.id);
-      await query(`UPDATE product SET ${fields.map(f=>`${f}=?`).join(",")} WHERE sku_id=?`, values);
+    if (!fields.length && !req.file) {
+      return res.status(400).json({ message: "No fields to update." });
     }
 
-    const [updated] = await query("SELECT * FROM product WHERE sku_id = ?", [req.params.id]);
+    values.push(req.params.id);
+    await query(
+      `UPDATE product SET ${fields.map(f => `${f}=?`).join(",")} WHERE sku_id=?`,
+      values
+    );
+
+    const [updated] = await query(`
+      SELECT p.*, DATEDIFF(p.expiry_date, CURDATE()) AS days_left,
+             s.company_name AS supplier_name, w.location_name AS warehouse_name, c.category_name
+      FROM product p
+      LEFT JOIN supplier s  ON p.supplier_id  = s.supplier_id
+      LEFT JOIN warehouse w ON p.warehouse_id = w.warehouse_id
+      LEFT JOIN category c  ON p.category_id  = c.category_id
+      WHERE p.sku_id = ?
+    `, [req.params.id]);
+
     if (!updated) return res.status(404).json({ message: "Product not found." });
     res.json(updated);
   } catch (e) { res.status(500).json({ message: e.message }); }

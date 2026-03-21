@@ -178,9 +178,23 @@ async function migrate() {
     await query(sql).catch(() => {}); // ignore "column already exists"
   }
 
+  await query(`CREATE TABLE IF NOT EXISTS restock_log (
+    id              INT           NOT NULL PRIMARY KEY AUTO_INCREMENT,
+    sku_id          VARCHAR(50)   NOT NULL,
+    product_name    VARCHAR(200)  NOT NULL,
+    quantity_added  INT           NOT NULL,
+    stock_before    INT           NOT NULL,
+    stock_after     INT           NOT NULL,
+    restocked_by    VARCHAR(100),
+    restocked_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    note            TEXT,
+    FOREIGN KEY (sku_id) REFERENCES product(sku_id) ON DELETE CASCADE
+  )`);
+
   console.log("✅  Migration complete — all tables ready.");
   process.exit(0);
 }
 
 migrate().catch((e) => { console.error(e); process.exit(1); });
 // Note: run separately to add employee table
+// Note: run this separately if tables already exist
